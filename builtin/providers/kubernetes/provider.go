@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/terraform"
 	"github.com/mitchellh/go-homedir"
 	kubernetes "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_5"
+	"k8s.io/kubernetes/pkg/client/restclient"
 	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
 	clientcmdapi "k8s.io/kubernetes/pkg/client/unversioned/clientcmd/api"
 )
@@ -49,7 +51,6 @@ func Provider() terraform.ResourceProvider {
 			"client_key": {
 				Type:        schema.TypeString,
 				Optional:    true,
-				Default:     "",
 				DefaultFunc: schema.EnvDefaultFunc("KUBE_CLIENT_KEY_DATA", ""),
 				Description: "PEM-encoded client certificate key for TLS authentication.",
 			},
@@ -88,35 +89,12 @@ func Provider() terraform.ResourceProvider {
 
 func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 	// Config file loading
-	path, err := homedir.Expand(d.Get("config_path").(string))
+	cfg, err := tryLoadingConfigFile(d)
 	if err != nil {
 		return nil, err
 	}
-
-	loader := &clientcmd.ClientConfigLoadingRules{
-		ExplicitPath: path,
-	}
-	overrides := &clientcmd.ConfigOverrides{}
-	ctxSuffix := "; no context"
-	authInfo, authInfoOk := d.GetOk("config_context_auth_info")
-	cluster, clusterOk := d.GetOk("config_context_cluster")
-	if authInfoOk || clusterOk {
-		overrides.Context = clientcmdapi.Context{}
-		if authInfoOk {
-			overrides.Context.AuthInfo = authInfo.(string)
-		}
-		if clusterOk {
-			overrides.Context.Cluster = cluster.(string)
-		}
-		ctxSuffix = fmt.Sprintf("; auth_info: %s, cluster: %s",
-			overrides.Context.AuthInfo, overrides.Context.Cluster)
-	}
-	log.Printf("[DEBUG] Using override context: %#v")
-
-	cc := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loader, overrides)
-	cfg, err := cc.ClientConfig()
-	if err != nil {
-		return nil, fmt.Errorf("Failed to load config (%s%s): %s", path, ctxSuffix, err)
+	if cfg == nil {
+		cfg = &restclient.Config{}
 	}
 
 	// Overriding with static configuration
@@ -146,8 +124,46 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 
 	k, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to build config: %s", err)
+		return nil, fmt.Errorf("Failed to configure: %s", err)
 	}
 
 	return k, nil
+}
+
+func tryLoadingConfigFile(d *schema.ResourceData) (*restclient.Config, error) {
+	path, err := homedir.Expand(d.Get("config_path").(string))
+	if err != nil {
+		return nil, err
+	}
+
+	loader := &clientcmd.ClientConfigLoadingRules{
+		ExplicitPath: path,
+	}
+	overrides := &clientcmd.ConfigOverrides{}
+	ctxSuffix := "; no context"
+	authInfo, authInfoOk := d.GetOk("config_context_auth_info")
+	cluster, clusterOk := d.GetOk("config_context_cluster")
+	if authInfoOk || clusterOk {
+		overrides.Context = clientcmdapi.Context{}
+		if authInfoOk {
+			overrides.Context.AuthInfo = authInfo.(string)
+		}
+		if clusterOk {
+			overrides.Context.Cluster = cluster.(string)
+		}
+		ctxSuffix = fmt.Sprintf("; auth_info: %s, cluster: %s",
+			overrides.Context.AuthInfo, overrides.Context.Cluster)
+	}
+	log.Printf("[DEBUG] Using override context: %#v", *overrides)
+
+	cc := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loader, overrides)
+	cfg, err := cc.ClientConfig()
+	if err != nil {
+		if pathErr, ok := err.(*os.PathError); ok && os.IsNotExist(pathErr.Err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("Failed to load config (%s%s): %s", path, ctxSuffix, err)
+	}
+
+	return cfg, nil
 }
