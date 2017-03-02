@@ -26,6 +26,12 @@ func resourceAwsDbInstance() *schema.Resource {
 		},
 
 		Schema: map[string]*schema.Schema{
+			"destination_region": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+
 			"name": {
 				Type:     schema.TypeString,
 				Optional: true,
@@ -352,6 +358,10 @@ func resourceAwsDbInstanceCreate(d *schema.ResourceData, meta interface{}) error
 			PubliclyAccessible:         aws.Bool(d.Get("publicly_accessible").(bool)),
 			Tags:                       tags,
 		}
+		if attr, ok := d.GetOk("destination_region"); ok {
+			opts.DestinationRegion = aws.String(attr.(string))
+		}
+
 		if attr, ok := d.GetOk("iops"); ok {
 			opts.Iops = aws.Int64(int64(attr.(int)))
 		}
